@@ -67,8 +67,12 @@ def testRobustness(solver: Solver, inputVariables, outputVariables, input, expec
     solver.push()
 
     # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-    for var, inp in zip(inputVariables, input):
-        solver.add(And(var-inp >= 0, var-inp <= eps))
+    for idx, (var, inp) in enumerate(zip(inputVariables, input)):
+        if idx == 0:
+            solver.add(Or(And(var-inp >= 0, var-inp <= eps),
+                          And(inp-var >= 0, inp-var <= eps)))
+        else:
+            solver.add(var==inp)
 
     # add max(outputs) != expected constraint
     solver.add(Or(*(outputVariables[expected] <= outVar for idx,

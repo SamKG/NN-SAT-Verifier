@@ -34,6 +34,11 @@ class Net(nn.Module):
         return x
 
 
+def strToFloat(str):
+    if str[-1] == '?':
+        str = str[:-1]
+    return float(str)
+
 with open("weights.pkl", "rb") as file:
     weight = pkl.load(file)
     l1_weight = weight['fc1.weight']
@@ -50,14 +55,15 @@ with open("weights.pkl", "rb") as file:
         [l1_weight, l2_weight], [l1_bias, l2_bias])
     id = 0
     x, y = train_dataset.__getitem__(id)
-    print("ground truth:", test_net.forward(torch.tensor(x).view(1, 1, 28, 28)))
+    print("ground truth:", test_net.forward(
+        torch.tensor(x).view(1, 1, 28, 28)))
     x = x.view(-1).cpu().numpy()
     print("running solver...")
-    isSat, model = verif.testRobustness(s, ivar, ovar, x, 4, .1)
+    isSat, model = verif.testRobustness(s, ivar, ovar, x, y, 100)
     if isSat:
         print("is sat!")
-        print([float(model[v].as_decimal(30)) for v in ovar])
-        img = np.reshape([float(model[v].as_decimal(30))
+        print([strToFloat(model[v].as_decimal(10)) for v in ovar])
+        img = np.reshape([strToFloat(model[v].as_decimal(10))
                           for v in ivar], (28, 28))
         fig = plt.figure()
         plt.tight_layout()
@@ -65,6 +71,7 @@ with open("weights.pkl", "rb") as file:
         plt.title("Ground Truth: {}".format(y))
         plt.xticks([])
         plt.yticks([])
+        plt.savefig("adversarial.png")
     else:
         print("is not sat!")
 
