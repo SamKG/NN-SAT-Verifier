@@ -1,38 +1,34 @@
-from numpy.core.fromnumeric import var
-from numpy.core.numeric import full
+import re
+
 from z3 import *
-from itertools import chain, product
-import numpy as np
 
 
-def createLayerVar(label: str, size: int):
-    '''Return a layer of z3 Real number variables'''
-    layer = [Real(f"{label}-{j}") for j in range(size)]
-    return layer
-
-
-def addLayerConstraints(solver: Solver, variables, nextLayerVariables, weight, bias, apply_relu=True):
+def multiplyLayer(solver: Solver, variables, weight, bias):
     assert len(weight[0]) == len(variables), "Invalid variables!"
-    assert len(weight) == len(nextLayerVariables), "Invalid next layer!"
+    assert len(weight) == len(bias), "Invalid bias!"
     print(
-        f"Adding constraints for layer of len {len(variables)} -> {len(nextLayerVariables)} with relu {apply_relu}")
+        f"Adding constraints for layer of len {len(variables)} -> {len(weight)}")
     # calculate accumulated (i.e. pre-activation) values
     accumulated = [sum(v*m for v, m in zip(variables, mult)) +
                    additive for mult, additive in zip(weight, bias)]
 
-    # add ReLU as a constraint
-    if apply_relu:
-        for acc, var in zip(accumulated, nextLayerVariables):
-            solver.add(Or(And(acc > 0, var == acc), And(acc <= 0, var == 0)))
-    else:
-        for acc, var in zip(accumulated, nextLayerVariables):
-            solver.add(var == acc)
-    return
+    return accumulated
 
 
 def abs(var):
     '''Returns absolute value of var'''
     return If(var >= 0, var, -var)
+
+
+def relu(var):
+    '''Returns relu of var'''
+    return If(var >= 0, var, 0)
+
+
+def applyRelu(solver: Solver, variables):
+    activated = [relu(v) for v in variables]
+
+    return activated
 
 
 class RobustnessChecker:
@@ -43,16 +39,17 @@ class RobustnessChecker:
             Each weight in the list should be a 2-dimensional array of scalars.
         '''
         assert len(weights) == len(biases), "Invalid weights/biases!"
+
         s = Solver()
         inputSize = len(weights[0][0])
-        inputVariables = createLayerVar("layer-0", inputSize)
+        inputVariables = [Real(f"input-{j}") for j in range(inputSize)]
+
         variables = inputVariables
         for layerIdx, (weight, bias) in enumerate(zip(weights, biases)):
-            nextLayerVariables = createLayerVar(
-                f"layer-{layerIdx+1}", len(weights[layerIdx]))
-            addLayerConstraints(s, variables, nextLayerVariables,
-                                weight, bias, layerIdx != len(weights) - 1)
-            variables = nextLayerVariables
+            variables = multiplyLayer(s, variables,
+                                      weight, bias)
+            if layerIdx != len(weights) - 1:
+                variables = applyRelu(s, variables)
 
         self._inpVar = inputVariables
         self._outVar = variables
@@ -70,26 +67,27 @@ class RobustnessChecker:
         self._solver.push()
 
         # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
-            if idx == 0:
-                self._solver.add(abs(var-inp) <= delta)
-            else:
-                self._solver.add(var == inp)
+        for var, inp in zip(self._inpVar, input):
+            self._solver.add(abs(var-inp) <= delta)
 
         # add max(outputs) != expected constraint
         self._solver.add(Or(*(self._outVar[expected] <= outVar for idx,
                               outVar in enumerate(self._outVar) if idx != expected)))
+
         sln = self._solver.check()
         model = None
         if sln == sat:
-            model = self._solver.model()
+            def getInt(a):
+                return int(re.search(r"\d+", a.name())[0])
+            model = [float(model[v].as_decimal(10))
+                     for v in sorted(self._solver.model(), key=getInt)]
 
         # revert added constraints
         self._solver.pop()
 
         return sln == sat, model
 
-    def testCorrectness(self, input, output, tol=1E-8):
+    def testCorrectness(self, input, output, tol=1E-5):
         '''Tests for correctness of the implementation by comparing inputs and outputs
         of a passed value
         Args:
