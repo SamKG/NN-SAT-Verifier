@@ -30,59 +30,86 @@ def addLayerConstraints(solver: Solver, variables, nextLayerVariables, weight, b
     return
 
 
-def createSolver(weights, biases):
-    '''Creates z3 solver constraints
-    Args:
-        weights: A list of weights for each layer, corresponding to a feed-forward network with input weights. (Biases are not allowed!)
-        Each weight in the list should be a 2-dimensional array of scalars.
-    '''
-    assert len(weights) == len(biases), "Invalid weights/biases!"
-    s = Solver()
-    inputSize = len(weights[0][0])
-    inputVariables = createLayerVar("layer-0", inputSize)
-    variables = inputVariables
-    for layerIdx, (weight, bias) in enumerate(zip(weights, biases)):
-        nextLayerVariables = createLayerVar(
-            f"layer-{layerIdx+1}", len(weights[layerIdx]))
-        addLayerConstraints(s, variables, nextLayerVariables,
-                            weight, bias, layerIdx != len(weights) - 1)
-        variables = nextLayerVariables
-
-    # we return the solver, input layer vars, and output layer vars
-    return s, inputVariables, variables
+def abs(var):
+    '''Returns absolute value of var'''
+    return If(var >= 0, var, -var)
 
 
-def testRobustness(solver: Solver, inputVariables, outputVariables, input, expected, eps):
-    '''Tests for epsilon robustness of a single input/output pair.
-    Note: This function is idempotent - you do not need to worry about cleaning up constraints
-    Args:
-        solver: The solver with created constraints
-        inputVariables: The list of input variables returned by the solver creator
-        outputVariables: The list of output variables returned by the solver creator
-        input: The 784 len input image
-        expected: The expected digit (i.e. pass in 7 if you expect it to be a 7)
-        eps: The epsilon to test for
-    '''
-    # create new constraint frame
-    solver.push()
+class RobustnessChecker:
+    def __init__(self, weights, biases):
+        '''Creates a robustness checker
+        Args:
+            weights: A list of weights for each layer, corresponding to a feed-forward network with input weights. (Biases are not allowed!)
+            Each weight in the list should be a 2-dimensional array of scalars.
+        '''
+        assert len(weights) == len(biases), "Invalid weights/biases!"
+        s = Solver()
+        inputSize = len(weights[0][0])
+        inputVariables = createLayerVar("layer-0", inputSize)
+        variables = inputVariables
+        for layerIdx, (weight, bias) in enumerate(zip(weights, biases)):
+            nextLayerVariables = createLayerVar(
+                f"layer-{layerIdx+1}", len(weights[layerIdx]))
+            addLayerConstraints(s, variables, nextLayerVariables,
+                                weight, bias, layerIdx != len(weights) - 1)
+            variables = nextLayerVariables
 
-    # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-    for idx, (var, inp) in enumerate(zip(inputVariables, input)):
-        if idx == 0:
-            solver.add(Or(And(var-inp >= 0, var-inp <= eps),
-                          And(inp-var >= 0, inp-var <= eps)))
-        else:
-            solver.add(var==inp)
+        self._inpVar = inputVariables
+        self._outVar = variables
+        self._solver = s
 
-    # add max(outputs) != expected constraint
-    solver.add(Or(*(outputVariables[expected] <= outVar for idx,
-                    outVar in enumerate(outputVariables) if idx != expected)))
-    sln = solver.check()
-    model = None
-    if sln == sat:
-        model = solver.model()
+    def testInputRobustness(self, input, expected, delta=1):
+        '''Tests for epsilon robustness of a single input/output pair.
+        Note: This function is idempotent - you do not need to worry about cleaning up constraints
+        Args:
+            input: The 784 len input image
+            expected: The expected digit (i.e. pass in 7 if you expect it to be a 7)
+            delta: The max change in a single pixel of input
+        '''
+        # create new constraint frame
+        self._solver.push()
 
-    # revert added constraints
-    solver.pop()
+        # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
+        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
+            if idx == 0:
+                self._solver.add(abs(var-inp) <= delta)
+            else:
+                self._solver.add(var == inp)
 
-    return sln == sat, model
+        # add max(outputs) != expected constraint
+        self._solver.add(Or(*(self._outVar[expected] <= outVar for idx,
+                              outVar in enumerate(self._outVar) if idx != expected)))
+        sln = self._solver.check()
+        model = None
+        if sln == sat:
+            model = self._solver.model()
+
+        # revert added constraints
+        self._solver.pop()
+
+        return sln == sat, model
+
+    def testCorrectness(self, input, output, tol=1E-8):
+        '''Tests for correctness of the implementation by comparing inputs and outputs
+        of a passed value
+        Args:
+            input: The 784 len input image
+            output: The expected output vector
+            tol: The max tolerance on outputs (needed to fix numerical precision issues)
+        '''
+        assert len(self._inpVar) == len(input), "Invalid input!"
+        assert len(self._outVar) == len(output), "Invalid output!"
+
+        self._solver.push()
+
+        # add passed inputs
+        for ivar, inp in zip(self._inpVar, input):
+            self._solver.add(ivar == inp)
+
+        for ovar, out in zip(self._outVar, output):
+            self._solver.add(abs(ovar-out) <= tol)
+
+        sln = self._solver.check()
+        assert sln == sat, "The inputs and outputs did not match! Please check implementation for correctness!"
+
+        self._solver.pop()
