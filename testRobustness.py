@@ -27,9 +27,9 @@ class Net(nn.Module):
     def forward(self, x):
         assert x.shape[1:] == torch.Size((1, 28, 28))
         b = x.shape[0]
-        x = x.view(b, 28 * 28)
-        print("l1", self.fc1(x))
-        x = F.relu(self.fc1(x))
+        x = x.view(1, 28 * 28)
+        x = self.fc1(x)
+        x = F.relu(x)
         x = self.fc2(x)
         return x
 
@@ -38,6 +38,7 @@ def strToFloat(str):
     if str[-1] == '?':
         str = str[:-1]
     return float(str)
+
 
 with open("weights.pkl", "rb") as file:
     weight = pkl.load(file)
@@ -50,21 +51,18 @@ with open("weights.pkl", "rb") as file:
     test_net.fc1.bias = nn.Parameter(torch.tensor(l1_bias))
     test_net.fc2.weight = nn.Parameter(torch.tensor(l2_weight))
     test_net.fc2.bias = nn.Parameter(torch.tensor(l2_bias))
-    print("building solver...")
-    s, ivar, ovar = verif.createSolver(
-        [l1_weight, l2_weight], [l1_bias, l2_bias])
-    id = 0
-    x, y = train_dataset.__getitem__(id)
-    print("ground truth:", test_net.forward(
-        torch.tensor(x).view(1, 1, 28, 28)))
-    x = x.view(-1).cpu().numpy()
+    x, y = train_dataset.__getitem__(0)
+    ground_truth = test_net.forward(x.view(1, 1, 28, 28))
+
+    x = x.view(28*28).numpy()
+    s = verif.RobustnessChecker([l1_weight, l2_weight], [l1_bias, l2_bias])
+    s.testCorrectness(x, ground_truth.detach().view(10).numpy())
+
     print("running solver...")
-    isSat, model = verif.testRobustness(s, ivar, ovar, x, y, 100)
+    isSat, model = s.testInputRobustness(x, y, delta=1)
     if isSat:
         print("is sat!")
-        print([strToFloat(model[v].as_decimal(10)) for v in ovar])
-        img = np.reshape([strToFloat(model[v].as_decimal(10))
-                          for v in ivar], (28, 28))
+        img = np.reshape(model, (28, 28))
         fig = plt.figure()
         plt.tight_layout()
         plt.imshow(img, cmap='gray', interpolation='none')
