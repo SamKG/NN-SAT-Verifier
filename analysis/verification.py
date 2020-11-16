@@ -15,7 +15,7 @@ def multiplyLayer(solver: Solver, variables, weight, bias):
     return accumulated
 
 
-def abs(var):
+def z3abs(var):
     '''Returns absolute value of var'''
     return If(var >= 0, var, -var)
 
@@ -65,22 +65,74 @@ class RobustnessChecker:
         '''
         # create new constraint frame
         self._solver.push()
-
+        
         # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-        for var, inp in zip(self._inpVar, input):
-            self._solver.add(abs(var-inp) <= delta, var <= max(input), var >= min(input))
+        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
+            if abs(inp - -0.42421296) >= 1E-5:
+                self._solver.add(var <= inp+delta, var >= inp-delta)
+            else:
+                self._solver.add(var == inp)
 
         # add max(outputs) != expected constraint
-        self._solver.add(Or(*(self._outVar[expected] <= outVar for idx,
+        self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
                               outVar in enumerate(self._outVar) if idx != expected)))
+        print("simplified outputs!")
 
         sln = self._solver.check()
         model = None
         if sln == sat:
+            model = self._solver.model()
             def getInt(a):
                 return int(re.search(r"\d+", a.name())[0])
-            model = [float(model[v].as_decimal(10))
-                     for v in sorted(self._solver.model(), key=getInt)]
+            def toFloat(a):
+                if a[-1] == '?':
+                    return float(a[:-1])
+                return float(a)
+
+            model = [toFloat(model[v].as_decimal(10))
+                     for v in sorted(model, key=getInt)]
+
+        # revert added constraints
+        self._solver.pop()
+
+        return sln == sat, model
+
+    def testOnePixelInputRobustness(self, input, expected, pixel_idx=0, delta=1):
+        '''Tests for epsilon robustness of a single input/output pair.
+        Note: This function is idempotent - you do not need to worry about cleaning up constraints
+        Args:
+            input: The 784 len input image
+            expected: The expected digit (i.e. pass in 7 if you expect it to be a 7)
+            delta: The max change in a single pixel of input
+        '''
+        # create new constraint frame
+        self._solver.push()
+        
+        # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
+        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
+            if idx == pixel_idx:
+                self._solver.add(var <= inp+delta, var >= inp-delta)
+            else:
+                self._solver.add(var == inp)
+
+        # add max(outputs) != expected constraint
+        self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
+                              outVar in enumerate(self._outVar) if idx != expected)))
+        print("simplified outputs!")
+
+        sln = self._solver.check()
+        model = None
+        if sln == sat:
+            model = self._solver.model()
+            def getInt(a):
+                return int(re.search(r"\d+", a.name())[0])
+            def toFloat(a):
+                if a[-1] == '?':
+                    return float(a[:-1])
+                return float(a)
+
+            model = [toFloat(model[v].as_decimal(10))
+                     for v in sorted(model, key=getInt)]
 
         # revert added constraints
         self._solver.pop()
@@ -105,7 +157,7 @@ class RobustnessChecker:
             self._solver.add(ivar == inp)
 
         for ovar, out in zip(self._outVar, output):
-            self._solver.add(abs(ovar-out) <= tol)
+            self._solver.add(z3abs(ovar-out) <= tol)
 
         sln = self._solver.check()
         assert sln == sat, "The inputs and outputs did not match! Please check implementation for correctness!"

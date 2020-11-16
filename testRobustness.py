@@ -9,7 +9,7 @@ import pickle as pkl
 import numpy as np
 import analysis.verification as verif
 import matplotlib.pyplot as plt
-
+ 
 train_dataset = torchvision.datasets.MNIST('./files/', train=True, download=True,
                                            transform=torchvision.transforms.Compose([
                                                torchvision.transforms.ToTensor(),
@@ -40,7 +40,7 @@ def strToFloat(str):
     return float(str)
 
 
-with open("weights.pkl", "rb") as file:
+with open("weights_old.pkl", "rb") as file:
     weight = pkl.load(file)
     l1_weight = weight['fc1.weight']
     l1_bias = weight['fc1.bias']
@@ -58,8 +58,14 @@ with open("weights.pkl", "rb") as file:
     s = verif.RobustnessChecker([l1_weight, l2_weight], [l1_bias, l2_bias])
     s.testCorrectness(x, ground_truth.detach().view(10).numpy())
 
-    print("running solver...")
-    isSat, model = s.testInputRobustness(x, y, delta=1)
+    print("running solver...", x, y)
+
+    # run single pixel
+    isSat, model = s.testOnePixelInputRobustness(x, y, delta=100)
+
+    # run digit
+    isSat, model = s.testInputRobustness(x, y)
+
     if isSat:
         print("is sat!")
         img = np.reshape(model, (28, 28))
