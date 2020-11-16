@@ -68,7 +68,7 @@ class RobustnessChecker:
 
         # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
         for var, inp in zip(self._inpVar, input):
-            self._solver.add(abs(var-inp) <= delta)
+            self._solver.add(abs(var-inp) <= delta, var <= max(input), var >= min(input))
 
         # add max(outputs) != expected constraint
         self._solver.add(Or(*(self._outVar[expected] <= outVar for idx,
