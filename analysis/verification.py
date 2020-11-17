@@ -76,7 +76,7 @@ class RobustnessChecker:
         # add max(outputs) != expected constraint
         self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
                               outVar in enumerate(self._outVar) if idx != expected)))
-        print("simplified outputs!")
+        # print("simplified outputs!")
 
         sln = self._solver.check()
         model = None
@@ -118,7 +118,7 @@ class RobustnessChecker:
         # add max(outputs) != expected constraint
         self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
                               outVar in enumerate(self._outVar) if idx != expected)))
-        print("simplified outputs!")
+        # print("simplified outputs!")
 
         sln = self._solver.check()
         model = None
@@ -138,6 +138,15 @@ class RobustnessChecker:
         self._solver.pop()
 
         return sln == sat, model
+    
+    def testAllOnePixelInputRobustness(self, input, expected, delta):
+        for i in range(len(input)):
+            isSat, model = self.testOnePixelInputRobustness(input, expected, i, delta)
+            if isSat:
+                break
+            
+        return isSat, model
+            
 
     def testCorrectness(self, input, output, tol=1E-5):
         '''Tests for correctness of the implementation by comparing inputs and outputs
