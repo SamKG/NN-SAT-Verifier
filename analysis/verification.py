@@ -1,7 +1,5 @@
 import re
-
 from z3 import *
-
 
 def multiplyLayer(solver: Solver, variables, weight, bias):
     assert len(weight[0]) == len(variables), "Invalid variables!"
@@ -39,23 +37,25 @@ class RobustnessChecker:
             Each weight in the list should be a 2-dimensional array of scalars.
         '''
         assert len(weights) == len(biases), "Invalid weights/biases!"
+        self.weights = weights
+        self.biases = biases
+
+    def _createSolver(self, inputs=[None]*28*28):
+        weights, biases = self.weights, self.biases
+        inputSize = len(weights[0][0])
+        assert len(inputs) == inputSize, "Invalid input length!"
 
         s = Solver()
-        inputSize = len(weights[0][0])
-        inputVariables = [Real(f"input-{j}") for j in range(inputSize)]
-
+        inputVariables = [Real(f"input-{j}") if inp is None else inp.item() for j, inp in enumerate(inputs)]
         variables = inputVariables
         for layerIdx, (weight, bias) in enumerate(zip(weights, biases)):
             variables = multiplyLayer(s, variables,
                                       weight, bias)
             if layerIdx != len(weights) - 1:
                 variables = applyRelu(s, variables)
+        return s, inputVariables, variables
 
-        self._inpVar = inputVariables
-        self._outVar = variables
-        self._solver = s
-
-    def testInputRobustness(self, input, expected, delta=1):
+    def testInputRobustness(self, inputs, expected, delta=1):
         '''Tests for epsilon robustness of a single input/output pair.
         Note: This function is idempotent - you do not need to worry about cleaning up constraints
         Args:
@@ -63,25 +63,20 @@ class RobustnessChecker:
             expected: The expected digit (i.e. pass in 7 if you expect it to be a 7)
             delta: The max change in a single pixel of input
         '''
-        # create new constraint frame
-        self._solver.push()
-        
-        # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
+        solver, inputVariables, outputVariables = self._createSolver(inputs=[inp if abs(inp - -0.42421296) < 1E-5 else None for inp in inputs])
+
+        for idx, (var, inp) in enumerate(zip(inputVariables, inputs)):
             if abs(inp - -0.42421296) >= 1E-5:
-                self._solver.add(var <= inp+delta, var >= inp-delta)
-            else:
-                self._solver.add(var == inp)
+                solver.add(var <= inp+delta, var >= inp-delta)
 
         # add max(outputs) != expected constraint
-        self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
-                              outVar in enumerate(self._outVar) if idx != expected)))
-        # print("simplified outputs!")
+        solver.add(Or(*(simplify(outputVariables[expected] < outVar) for idx,
+                              outVar in enumerate(outputVariables) if idx != expected)))
 
-        sln = self._solver.check()
+        sln = solver.check()
         model = None
         if sln == sat:
-            model = self._solver.model()
+            model = solver.model()
             def getInt(a):
                 return int(re.search(r"\d+", a.name())[0])
             def toFloat(a):
@@ -91,13 +86,10 @@ class RobustnessChecker:
 
             model = [toFloat(model[v].as_decimal(10))
                      for v in sorted(model, key=getInt)]
-
-        # revert added constraints
-        self._solver.pop()
 
         return sln == sat, model
 
-    def testOnePixelInputRobustness(self, input, expected, pixel_idx=0, delta=1):
+    def testOnePixelInputRobustness(self, inputs, expected, pixel_idx=0, delta=1):
         '''Tests for epsilon robustness of a single input/output pair.
         Note: This function is idempotent - you do not need to worry about cleaning up constraints
         Args:
@@ -105,25 +97,21 @@ class RobustnessChecker:
             expected: The expected digit (i.e. pass in 7 if you expect it to be a 7)
             delta: The max change in a single pixel of input
         '''
-        # create new constraint frame
-        self._solver.push()
+        solver, inputVariables, outputVariables = self._createSolver(inputs=[inp if idx != pixel_idx else None for idx, inp in enumerate(inputs)])
         
         # add eps-closeness constraints to input vars (#TODO: make this frob. norm instead of elementwise?)
-        for idx, (var, inp) in enumerate(zip(self._inpVar, input)):
+        for idx, (var, inp) in enumerate(zip(inputVariables, inputs)):
             if idx == pixel_idx:
-                self._solver.add(var <= inp+delta, var >= inp-delta)
-            else:
-                self._solver.add(var == inp)
+                solver.add(var <= inp+delta, var >= inp-delta)
 
         # add max(outputs) != expected constraint
-        self._solver.add(Or(*(simplify(self._outVar[expected] < outVar) for idx,
-                              outVar in enumerate(self._outVar) if idx != expected)))
-        # print("simplified outputs!")
+        solver.add(Or(*(simplify(outputVariables[expected] < outVar) for idx,
+                              outVar in enumerate(outputVariables) if idx != expected)))
 
-        sln = self._solver.check()
+        sln = solver.check()
         model = None
         if sln == sat:
-            model = self._solver.model()
+            model = solver.model()
             def getInt(a):
                 return int(re.search(r"\d+", a.name())[0])
             def toFloat(a):
@@ -133,9 +121,6 @@ class RobustnessChecker:
 
             model = [toFloat(model[v].as_decimal(10))
                      for v in sorted(model, key=getInt)]
-
-        # revert added constraints
-        self._solver.pop()
 
         return sln == sat, model
     
@@ -146,7 +131,6 @@ class RobustnessChecker:
                 break
             
         return isSat, model
-            
 
     def testCorrectness(self, input, output, tol=1E-5):
         '''Tests for correctness of the implementation by comparing inputs and outputs
@@ -156,19 +140,12 @@ class RobustnessChecker:
             output: The expected output vector
             tol: The max tolerance on outputs (needed to fix numerical precision issues)
         '''
-        assert len(self._inpVar) == len(input), "Invalid input!"
-        assert len(self._outVar) == len(output), "Invalid output!"
+        solver, inputVariables, outputVariables = self._createSolver(inputs=input)
+        assert len(inputVariables) == len(input), "Invalid input!"
+        assert len(outputVariables) == len(output), "Invalid output!"
 
-        self._solver.push()
+        for ovar, out in zip(outputVariables, output):
+            solver.add(z3abs(ovar-out) <= tol)
 
-        # add passed inputs
-        for ivar, inp in zip(self._inpVar, input):
-            self._solver.add(ivar == inp)
-
-        for ovar, out in zip(self._outVar, output):
-            self._solver.add(z3abs(ovar-out) <= tol)
-
-        sln = self._solver.check()
+        sln = solver.check()
         assert sln == sat, "The inputs and outputs did not match! Please check implementation for correctness!"
-
-        self._solver.pop()
